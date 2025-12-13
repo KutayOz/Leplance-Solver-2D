@@ -34,6 +34,7 @@ from src.studies import (
     run_sweep_direction_study, run_all_methods
 )
 from src.validation import run_all_validations, run_unit_tests
+from src.output_manager import OutputManager, get_output_manager
 import numpy as np
 
 
@@ -294,8 +295,9 @@ def run_single_solver():
     grid.initialize_interior(value=Settings.init_value, mode='uniform')
     grid.apply_boundary_conditions()
     
-    # Ensure output directory exists
-    os.makedirs(Settings.output_dir, exist_ok=True)
+    # Create organized output directory
+    output_mgr = get_output_manager(Settings.output_dir)
+    run_dir = output_mgr.create_single_solver_dir(method)
     
     # Run solver
     start_time = time.time()
@@ -370,15 +372,29 @@ def run_single_solver():
     print(f"  Final residual: {compute_residual_l2(grid.psi, grid.dx, grid.dy):.2e}")
     print(f"  Time:           {elapsed_time:.2f} seconds")
     
+    # Save run info
+    run_info = {
+        'Method': method,
+        'Tolerance': Settings.tolerance,
+        'Max iterations': Settings.max_iterations,
+        'Omega': Settings.omega if method in ['sor', 'line_sor', 'red_black_sor'] else 'N/A',
+        'Converged': converged_str,
+        'Iterations': history.iterations,
+        'Final residual': f"{compute_residual_l2(grid.psi, grid.dx, grid.dy):.2e}",
+        'Time (seconds)': f"{elapsed_time:.2f}"
+    }
+    output_mgr.save_run_info(run_dir, run_info)
+    
     # Ask about generating plots
     print("\n--- Generate Plots ---")
+    print(f"  Output folder: {run_dir}")
     choice = get_user_choice("  Generate streamlines plot? (y/n): ", ['y', 'n', 'Y', 'N'])
     if choice and choice.lower() == 'y':
-        plot_streamlines(grid, output_dir=Settings.output_dir, method_name=method)
+        plot_streamlines(grid, output_dir=run_dir, method_name=method)
     
     choice = get_user_choice("  Generate heatmap plot? (y/n): ", ['y', 'n', 'Y', 'N'])
     if choice and choice.lower() == 'y':
-        plot_solution_heatmap(grid, output_dir=Settings.output_dir, method_name=method)
+        plot_solution_heatmap(grid, output_dir=run_dir, method_name=method)
     
     pause()
 
@@ -395,27 +411,44 @@ def run_all_methods_comparison():
     if confirm is None or confirm.lower() != 'y':
         return
     
-    # Ensure output directory exists
-    os.makedirs(Settings.output_dir, exist_ok=True)
+    # Create organized output directory
+    output_mgr = get_output_manager(Settings.output_dir)
+    run_dir = output_mgr.create_all_methods_dir()
+    print(f"\nOutput folder: {run_dir}")
     
     # Run all methods
+    start_time = time.time()
     results = run_all_methods(
         tolerance=Settings.tolerance,
         max_iterations=Settings.max_iterations,
         omega_sor=Settings.omega,
         verbose=Settings.verbose
     )
+    elapsed_time = time.time() - start_time
     
     # Generate plots
     print("\nGenerating comparison plots...")
-    plot_vertical_cut_comparison(results, x_cut=5.0, output_dir=Settings.output_dir)
+    plot_vertical_cut_comparison(results, x_cut=5.0, output_dir=run_dir)
     
     histories_dict = {name: hist for name, (grid, hist) in results.items()}
-    plot_convergence_comparison(histories_dict, output_dir=Settings.output_dir)
+    plot_convergence_comparison(histories_dict, output_dir=run_dir)
     
     if 'Point SOR' in results:
-        plot_streamlines(results['Point SOR'][0], output_dir=Settings.output_dir,
+        plot_streamlines(results['Point SOR'][0], output_dir=run_dir,
                         method_name='Point SOR')
+    
+    # Save run info
+    run_info = {
+        'Operation': 'All Methods Comparison',
+        'Tolerance': Settings.tolerance,
+        'Max iterations': Settings.max_iterations,
+        'Omega (SOR)': Settings.omega,
+        'Total time (seconds)': f"{elapsed_time:.2f}",
+        'Methods run': ', '.join(results.keys())
+    }
+    for name, (grid, hist) in results.items():
+        run_info[f'{name} iterations'] = hist.iterations
+    output_mgr.save_run_info(run_dir, run_info)
     
     # Run validation
     print("\n--- Validation ---")
@@ -451,11 +484,14 @@ def run_omega_optimization():
     if confirm is None or confirm.lower() != 'y':
         return
     
-    # Ensure output directory exists
-    os.makedirs(Settings.output_dir, exist_ok=True)
+    # Create organized output directory
+    output_mgr = get_output_manager(Settings.output_dir)
+    run_dir = output_mgr.create_omega_study_dir()
+    print(f"\nOutput folder: {run_dir}")
     
     # Point SOR study
     print("\n--- Point SOR ---")
+    start_time = time.time()
     point_sor_results = run_omega_study(
         omega_range, solver_type='point_sor',
         tolerance=Settings.tolerance, max_iterations=Settings.max_iterations,
@@ -469,6 +505,7 @@ def run_omega_optimization():
         tolerance=Settings.tolerance, max_iterations=Settings.max_iterations,
         line_direction=Settings.line_direction, verbose=False
     )
+    elapsed_time = time.time() - start_time
     
     # Generate plot
     print("\nGenerating omega study plot...")
@@ -476,8 +513,22 @@ def run_omega_optimization():
         omega_range,
         point_sor_results['iterations'],
         line_sor_results['iterations'],
-        output_dir=Settings.output_dir
+        output_dir=run_dir
     )
+    
+    # Save run info
+    run_info = {
+        'Operation': 'Omega Optimization Study',
+        'Omega range': f"{omega_min:.2f} to {omega_max:.2f} (step {omega_step:.2f})",
+        'Tolerance': Settings.tolerance,
+        'Max iterations': Settings.max_iterations,
+        'Total time (seconds)': f"{elapsed_time:.2f}",
+        'Point SOR optimal omega': f"{point_sor_results['omega_opt']:.3f}",
+        'Point SOR min iterations': point_sor_results['min_iterations'],
+        'Line SOR optimal omega': f"{line_sor_results['omega_opt']:.3f}",
+        'Line SOR min iterations': line_sor_results['min_iterations']
+    }
+    output_mgr.save_run_info(run_dir, run_info)
     
     print(f"\n{'='*60}")
     print("RESULTS")
@@ -510,10 +561,13 @@ def run_ic_sensitivity():
     if confirm is None or confirm.lower() != 'y':
         return
     
-    # Ensure output directory exists
-    os.makedirs(Settings.output_dir, exist_ok=True)
+    # Create organized output directory
+    output_mgr = get_output_manager(Settings.output_dir)
+    run_dir = output_mgr.create_ic_study_dir()
+    print(f"\nOutput folder: {run_dir}")
     
     # Run study
+    start_time = time.time()
     ic_results = run_initial_condition_study(
         omega_opt=Settings.omega,
         initial_values=[0.0, 2.5, 5.0, 10.0],
@@ -521,11 +575,24 @@ def run_ic_sensitivity():
         max_iterations=Settings.max_iterations,
         verbose=True
     )
+    elapsed_time = time.time() - start_time
     
     # Generate plot
     print("\nGenerating initial condition study plot...")
     ic_histories = {name: hist for name, (grid, hist) in ic_results.items()}
-    plot_initial_condition_study(ic_histories, output_dir=Settings.output_dir)
+    plot_initial_condition_study(ic_histories, output_dir=run_dir)
+    
+    # Save run info
+    run_info = {
+        'Operation': 'Initial Condition Sensitivity Study',
+        'Omega': Settings.omega,
+        'Tolerance': Settings.tolerance,
+        'Max iterations': Settings.max_iterations,
+        'Total time (seconds)': f"{elapsed_time:.2f}"
+    }
+    for name, (grid, hist) in ic_results.items():
+        run_info[f'{name} iterations'] = hist.iterations
+    output_mgr.save_run_info(run_dir, run_info)
     
     pause()
 
@@ -542,10 +609,13 @@ def run_sweep_comparison():
     if confirm is None or confirm.lower() != 'y':
         return
     
-    # Ensure output directory exists
-    os.makedirs(Settings.output_dir, exist_ok=True)
+    # Create organized output directory
+    output_mgr = get_output_manager(Settings.output_dir)
+    run_dir = output_mgr.create_sweep_study_dir()
+    print(f"\nOutput folder: {run_dir}")
     
     # Run studies
+    start_time = time.time()
     print("\n--- Gauss-Seidel ---")
     gs_results = run_sweep_direction_study(
         method='gauss_seidel',
@@ -561,11 +631,23 @@ def run_sweep_comparison():
         max_iterations=Settings.max_iterations,
         verbose=True
     )
+    elapsed_time = time.time() - start_time
     
     # Generate plot
     all_results = {**gs_results, **line_sor_results}
     print("\nGenerating sweep direction comparison plot...")
-    plot_sweep_direction_comparison(all_results, output_dir=Settings.output_dir)
+    plot_sweep_direction_comparison(all_results, output_dir=run_dir)
+    
+    # Save run info
+    run_info = {
+        'Operation': 'Sweep Direction Comparison Study',
+        'Tolerance': Settings.tolerance,
+        'Max iterations': Settings.max_iterations,
+        'Total time (seconds)': f"{elapsed_time:.2f}"
+    }
+    for name, (grid, hist) in all_results.items():
+        run_info[f'{name} iterations'] = hist.iterations
+    output_mgr.save_run_info(run_dir, run_info)
     
     pause()
 
